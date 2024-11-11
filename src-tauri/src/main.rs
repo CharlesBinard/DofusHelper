@@ -130,9 +130,6 @@ fn click_all_windows() -> Result<(), String> {
                 MAKELPARAM(client_pos.x, client_pos.y),
             );
         }
-
-        let delay = rand::thread_rng().gen_range(80..=150);
-        std::thread::sleep(std::time::Duration::from_millis(delay));
     }
 
     Ok(())
