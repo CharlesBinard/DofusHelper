@@ -4,17 +4,18 @@
 )]
 
 use serde::Serialize;
+use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
 use tauri::{command, generate_handler, Emitter, Manager, State, WebviewWindow, Window};
-use windows::{
-    Win32::Foundation::{BOOL, HWND, LPARAM},
-    Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId},
-    Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetForegroundWindow, GetWindowTextA, IsWindowVisible, SetForegroundWindow,GetWindowThreadProcessId,
-        ShowWindow, SW_RESTORE,
-    },
+use windows::Win32::Foundation::{BOOL, HWND, LPARAM, POINT, WPARAM};
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows::Win32::Graphics::Gdi::ScreenToClient;
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetForegroundWindow, GetWindowTextA, IsWindowVisible, SetForegroundWindow, GetWindowThreadProcessId,
+    ShowWindow, SW_RESTORE, SendMessageA, GetCursorPos, WM_LBUTTONDOWN, WM_LBUTTONUP,
 };
 use tokio::time::{self, Duration};
+use rand::Rng; 
 
 #[derive(Serialize, Clone)]
 struct DofusWindow {
@@ -46,7 +47,6 @@ impl WindowManager {
         }
         self.windows = new_windows;
     }
-    
 
     fn next_window(&mut self) -> Option<&DofusWindow> {
         if self.windows.is_empty() {
@@ -91,11 +91,57 @@ fn get_dofus_windows() -> Vec<DofusWindow> {
     }
 
     unsafe {
-        let _ = EnumWindows(Some(enum_windows_proc), LPARAM(&mut windows as *mut _ as isize));
+        EnumWindows(Some(enum_windows_proc), LPARAM(&mut windows as *mut _ as isize));
     }
 
     windows
 }
+
+#[command]
+fn click_all_windows() -> Result<(), String> {
+    let mut cursor_pos = POINT::default();
+    unsafe {
+        if GetCursorPos(&mut cursor_pos).is_err() {
+            return Err("Failed to get cursor position".into());
+        }
+    }
+
+    let dofus_windows = get_dofus_windows();
+
+    for win in dofus_windows {
+        let hwnd = HWND(win.hwnd as *mut c_void);
+        let mut client_pos = cursor_pos;
+        unsafe {
+            if !ScreenToClient(hwnd, &mut client_pos).as_bool() {
+                eprintln!("Failed to convert screen coordinates for hwnd: {}", win.hwnd);
+                continue;
+            }
+
+            SendMessageA(
+                hwnd,
+                WM_LBUTTONDOWN,
+                WPARAM(0x0001),
+                MAKELPARAM(client_pos.x, client_pos.y),
+            );
+            SendMessageA(
+                hwnd,
+                WM_LBUTTONUP,
+                WPARAM(0x0000),
+                MAKELPARAM(client_pos.x, client_pos.y),
+            );
+        }
+
+        let delay = rand::thread_rng().gen_range(80..=150);
+        std::thread::sleep(std::time::Duration::from_millis(delay));
+    }
+
+    Ok(())
+}
+
+fn MAKELPARAM(x: i32, y: i32) -> LPARAM {
+    LPARAM(((y & 0xFFFF) << 16 | (x & 0xFFFF)) as isize)
+}
+
 
 fn get_window_title(hwnd: HWND) -> Option<String> {
     unsafe {
@@ -123,7 +169,7 @@ fn focus_window_command(hwnd: usize, window: Window) -> Result<(), String> {
 }
 
 fn focus_window(hwnd: usize, window: &Window) -> Result<(), String> {
-    let hwnd = HWND(hwnd as *mut _);
+    let hwnd = HWND(hwnd as *mut c_void);
     unsafe {
         let current_thread_id = GetCurrentThreadId();
         let target_thread_id = GetWindowThreadProcessId(hwnd, None);
@@ -132,14 +178,14 @@ fn focus_window(hwnd: usize, window: &Window) -> Result<(), String> {
             return Err("Failed to attach thread input".into());
         }
 
-        let _ = ShowWindow(hwnd, SW_RESTORE);
-        let _ = SetForegroundWindow(hwnd);
+        ShowWindow(hwnd, SW_RESTORE);
+        SetForegroundWindow(hwnd);
 
         if !AttachThreadInput(current_thread_id, target_thread_id, false).as_bool() {
             return Err("Failed to detach thread input".into());
         }
     }
-    emit_active_window_changed(window)?;
+    emit_active_dofus_changed(window)?;
 
     Ok(())
 }
@@ -152,14 +198,16 @@ fn set_tauri_always_on_top(window: Window, always_on_top: bool) -> Result<(), St
 }
 
 #[command]
-fn is_focused_on_app(window: WebviewWindow) -> Result<bool, String> {
+fn is_focused_on_app_or_dofus(window: WebviewWindow) -> Result<bool, String> {
     unsafe {
         let active_hwnd = GetForegroundWindow();
         let app_hwnd = window
             .hwnd()
             .map_err(|e| e.to_string())?;
-        Ok(active_hwnd == app_hwnd)
-    }
+        let dofus_hwnd = get_active_dofus_window()
+        .map(|w| HWND(w.hwnd as *mut c_void));
+    Ok(active_hwnd == app_hwnd || Some(active_hwnd) == dofus_hwnd)
+}
 }
 
 #[command]
@@ -198,12 +246,12 @@ async fn prev_window(
     Ok(())
 }
 
-fn emit_active_window_changed(window: &Window) -> Result<(), String> {
-    if let Some(active_window) = get_active_dofus_window() {
-        let payload = serde_json::to_value(&active_window).map_err(|e| e.to_string())?;
-        window.emit("active_window_changed", payload).map_err(|e| e.to_string())
+fn emit_active_dofus_changed(window: &Window) -> Result<(), String> {
+    if let Some(active_dofus) = get_active_dofus_window() {
+        let payload = serde_json::to_value(&active_dofus).map_err(|e| e.to_string())?;
+        window.emit("active_dofus_changed", payload).map_err(|e| e.to_string())
     } else {
-        window.emit("active_window_changed", serde_json::json!(null)).map_err(|e| e.to_string())
+        window.emit("active_dofus_changed", serde_json::json!(null)).map_err(|e| e.to_string())
     }
 }
 
@@ -222,28 +270,28 @@ async fn main() {
             set_window_size,
             next_window,
             prev_window,
-            is_focused_on_app
+            click_all_windows,
         ])
         .setup(move |app| {
             let window = app.get_webview_window("main").ok_or("Failed to get main window")?;
             let mut wm = window_manager.lock().map_err(|_| "Failed to lock WindowManager")?;
             wm.refresh_windows();
-            let _ =  window.set_always_on_top(true);
+            let _ = window.set_always_on_top(true);
 
             let window_clone = window.clone();
             tokio::spawn(async move {
-                let mut interval = time::interval(Duration::from_secs(1));
+                let mut interval = time::interval(Duration::from_millis(500));
                 let mut last_focus: bool = false;
 
                 loop {
                     interval.tick().await;
 
-                    match is_focused_on_app(window_clone.clone()) {
+                    match is_focused_on_app_or_dofus(window_clone.clone()) {
                         Ok(is_focused) => {
                             if is_focused != last_focus {
                                 last_focus = is_focused;
-                                if let Err(e) = window_clone.emit("focus_changed", is_focused) {
-                                    eprintln!("Failed to emit focus_changed: {}", e);
+                                if let Err(e) = window_clone.emit("is_focused_on_app_or_dofus", is_focused) {
+                                    eprintln!("Failed to emit is_focused_on_app_or_dofus: {}", e);
                                 }
                             }
                         }

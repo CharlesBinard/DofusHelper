@@ -25,7 +25,7 @@ import {
   ShortcutInputBlock,
 } from './styles';
 import ShortcutInput from './components/ShortcutInput';
-import { CLASSES_IMAGES, DEFAULT_SHORTCUTS } from './constants';
+import { CLASSES_IMAGES, DEFAULT_SHORTCUTS, ShortcutAction } from './constants';
 
 type DofusWindow = {
   title: string;
@@ -40,20 +40,18 @@ const App: React.FC = () => {
   const [alwaysOnTop, setAlwaysOnTop] = useState(true);
   const [isAccordionOpen, setAccordionOpen] = useState(false);
   const [autoAdjustSize, setAutoAdjustSize] = useState(true);
-  const [isFocusOnApp, setIsFocusOnApp] = useState(false);
+  const [isFocusOnAppOrDofus, setIsFocusOnAppOrDofus] = useState(false);
   const [shortcuts, setShortcuts] = useState<Record<string, string>>({});
 
   const contentRef = useRef<HTMLDivElement>(null);
   const [unlistenActiveWindow, setUnlistenActiveWindow] = useState<UnlistenFn | null>(null);
   const [unlistenFocus, setUnlistenFocus] = useState<UnlistenFn | null>(null);
 
-  // Fetch shortcuts from localStorage or use defaults
   const fetchShortcuts = useCallback(() => {
     const savedShortcuts = localStorage.getItem('shortcuts');
     setShortcuts(savedShortcuts ? JSON.parse(savedShortcuts) : DEFAULT_SHORTCUTS);
   }, []);
 
-  // Update shortcut in state and localStorage
   const updateShortcut = useCallback((action: string, shortcut: string) => {
     setShortcuts((prev) => {
       const updated = { ...prev, [action]: shortcut };
@@ -94,7 +92,6 @@ const App: React.FC = () => {
     }
   }, [alwaysOnTop]);
 
-  // Fetch windows
   const fetchWindows = useCallback(async () => {
     try {
       const result: DofusWindow[] = await invoke('get_dofus_windows');
@@ -105,7 +102,6 @@ const App: React.FC = () => {
     }
   }, []);
 
-  // Focus a specific window
   const focusWindow = useCallback(async (hwnd: number) => {
     try {
       await invoke('focus_window_command', { hwnd });
@@ -114,20 +110,25 @@ const App: React.FC = () => {
     }
   }, []);
 
-  // Handle shortcut actions
+  console.log(" activeDofusWindow", activeDofusWindow)
+
   const handleShortcutAction = useCallback(
-    async (action: 'next' | 'prev') => {
+    async (action: ShortcutAction) => {
       try {
-        await invoke(`${action}_window`);
-        console.log(`${action === 'next' ? 'Next' : 'Previous'} window triggered`);
+        if (action === 'click_all') {
+          await invoke('click_all_windows');
+          console.log('Click all windows triggered');
+        } else {
+          await invoke(`${action}_window`);
+          console.log(`${action === 'next' ? 'Next' : 'Previous'} window triggered`);
+        }
       } catch (error) {
-        console.error(`Error triggering ${action} window:`, error);
+        console.error(`Error triggering ${action} action:`, error);
       }
     },
     []
   );
-
-  // Handle shortcut changes
+  
   const handleChangeShortcut = useCallback(
     (action: string, shortcut: string) => {
       updateShortcut(action, shortcut);
@@ -135,11 +136,10 @@ const App: React.FC = () => {
     [updateShortcut]
   );
 
-  // Setup and cleanup shortcuts
   useEffect(() => {
     const setupShortcuts = async () => {
       await unregisterAll();
-      const actions: Array<'next' | 'prev'> = ['next', 'prev'];
+      const actions: Array<ShortcutAction> = ['next', 'prev', "click_all"];
 
       for (const action of actions) {
         const shortcut = shortcuts[action] || DEFAULT_SHORTCUTS[action];
@@ -154,7 +154,7 @@ const App: React.FC = () => {
       }
     };
 
-    if (activeDofusWindow || isFocusOnApp) {
+    if (isFocusOnAppOrDofus) {
       setupShortcuts().catch(console.error);
     } else {
       unregisterAll().catch(console.error);
@@ -163,26 +163,22 @@ const App: React.FC = () => {
     return () => {
       unregisterAll().catch(console.error);
     };
-  }, [activeDofusWindow, isFocusOnApp, shortcuts, handleShortcutAction]);
+  }, [isFocusOnAppOrDofus, shortcuts, handleShortcutAction]);
 
-  // Initial fetch and window size adjustment, plus setting up event listeners
   useEffect(() => {
     fetchShortcuts();
     fetchWindows();
 
-    // Fonction asynchrone pour configurer les écouteurs d'événements
     const setupEventListeners = async () => {
       try {
-        // Écouter les changements de fenêtre active
-        const unlistenActive = await listen<DofusWindow | null>('active_window_changed', (event) => {
-          console.log('active_window_changed', event.payload);
+        const unlistenActive = await listen<DofusWindow | null>('active_dofus_changed', (event) => {
+          console.log('active_dofus_changed', event.payload);
           setActiveDofusWindow(event.payload);
         });
 
-        // Écouter les changements de focus sur l'application
-        const unlistenFocus = await listen<boolean>('focus_changed', (event) => {
-          console.log('focus_changed', event.payload);
-          setIsFocusOnApp(event.payload);
+        const unlistenFocus = await listen<boolean>('is_focused_on_app_or_dofus', (event) => {
+          console.log('is_focused_on_app_or_dofus', event.payload);
+          setIsFocusOnAppOrDofus(event.payload);
         });
 
         setUnlistenActiveWindow(() => unlistenActive);
@@ -230,7 +226,7 @@ const App: React.FC = () => {
             </SettingsGroup>
 
             <ShortcutGroup>
-              {(['next', 'prev'] as const).map((action) => (
+              {(['next', 'prev', 'click_all'] as const).map((action) => (
                   <ShortcutInputBlock key={action} >
                    <p> {action.charAt(0).toUpperCase() + action.slice(1)}:</p>
                     <ShortcutInput

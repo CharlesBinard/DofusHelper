@@ -46,4 +46,7 @@ export const CLASSES_IMAGES: Record<string, string> = {
 export const DEFAULT_SHORTCUTS = {
     next: 'CommandOrControl+Shift+N',
     prev: 'CommandOrControl+Shift+P',
+    click_all: 'Ctrl+Alt+C',
   };
+
+export type ShortcutAction = 'next' | 'prev' | 'click_all';
