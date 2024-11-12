@@ -6,16 +6,22 @@
 use serde::Serialize;
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
-use tauri::{command, generate_handler, Emitter, Manager, State, WebviewWindow, Window};
-use windows::Win32::Foundation::{BOOL, HWND, LPARAM, POINT, WPARAM};
-use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
-use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetCursorPos, GetForegroundWindow, GetWindowTextA, GetWindowThreadProcessId, IsWindowVisible, PostMessageA, SetForegroundWindow, ShowWindow, SW_RESTORE, WM_LBUTTONDOWN, WM_LBUTTONUP
+use std::thread;
+use tauri::{
+    command, generate_handler, Emitter, Manager, State, WebviewWindow, Window,
 };
 use tokio::time::{self, Duration};
-use std::thread;
+use windows::Win32::Foundation::{BOOL, HWND, LPARAM, POINT, WPARAM};
+use windows::Win32::System::Threading::{
+    AttachThreadInput, GetCurrentThreadId,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetCursorPos, GetForegroundWindow, GetWindowTextA, IsWindowVisible,GetWindowThreadProcessId,
+    PostMessageA, SetForegroundWindow, ShowWindow, SW_RESTORE, WM_LBUTTONDOWN,
+    WM_LBUTTONUP,
+};
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 struct DofusWindow {
     title: String,
     hwnd: usize,
@@ -38,9 +44,7 @@ impl WindowManager {
 
     fn refresh_windows(&mut self) {
         let new_windows = get_dofus_windows();
-        if new_windows.len() != self.windows.len() {
-            self.current_index = 0;
-        } else if self.current_index >= new_windows.len() {
+        if new_windows.len() != self.windows.len() || self.current_index >= new_windows.len() {
             self.current_index = 0;
         }
         self.windows = new_windows;
@@ -63,45 +67,117 @@ impl WindowManager {
     }
 }
 
-#[command]
-fn get_dofus_windows() -> Vec<DofusWindow> {
-    let mut windows = Vec::new();
-    unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        if !IsWindowVisible(hwnd).as_bool() {
-            return BOOL(1);
+mod windows_api {
+    use super::*;
+    
+    pub fn get_window_title(hwnd: HWND) -> Option<String> {
+        unsafe {
+            let mut buffer = [0u8; 512];
+            let len = GetWindowTextA(hwnd, &mut buffer);
+            if len == 0 {
+                return None;
+            }
+            String::from_utf8(buffer[..len as usize].to_vec()).ok()
         }
+    }
 
-        let windows = &mut *(lparam.0 as *mut Vec<DofusWindow>);
-        if let Some(title) = get_window_title(hwnd) {
-            if title.contains("- Beta") {
-                let parts: Vec<&str> = title.split(" - ").collect();
-                if parts.len() >= 2 {
-                    windows.push(DofusWindow {
-                        title: title.clone(),
-                        hwnd: hwnd.0 as usize,
-                        name: parts[0].to_string(),
-                        class: parts[1].to_string(),
-                    });
-                }
+    pub fn make_lparam(x: i32, y: i32) -> LPARAM {
+        LPARAM(((y & 0xFFFF) << 16 | (x & 0xFFFF)) as isize)
+    }
+
+    pub fn send_click(hwnd: HWND, pos: POINT) -> Result<(), String> {
+        unsafe {
+            PostMessageA(
+                hwnd,
+                WM_LBUTTONDOWN,
+                WPARAM(0x0001),
+                make_lparam(pos.x, pos.y),
+            )
+            .ok().ok_or_else(|| "Failed to post WM_LBUTTONDOWN".to_string())?;
+
+
+            thread::sleep(Duration::from_millis(50));
+
+            PostMessageA(
+                hwnd,
+                WM_LBUTTONUP,
+                WPARAM(0x0000),
+                make_lparam(pos.x, pos.y),
+            )
+            .ok()
+            .ok_or_else(|| "Failed to post WM_LBUTTONUP".to_string())
+        }
+    }
+
+    pub fn focus_window(hwnd: HWND) -> Result<(), String> {
+        unsafe {
+            let current_thread_id = GetCurrentThreadId();
+            let target_thread_id = GetWindowThreadProcessId(hwnd, None);
+
+            if !AttachThreadInput(current_thread_id, target_thread_id, true).as_bool() {
+                return Err("Failed to attach thread input".to_string());
+            }
+
+            ShowWindow(hwnd, SW_RESTORE).ok().map_err(|_| "Failed to restore window".to_string())?;
+            SetForegroundWindow(hwnd).ok().map_err(|_| "Failed to set foreground window".to_string())?;
+
+            if !AttachThreadInput(current_thread_id, target_thread_id, false).as_bool() {
+                return Err("Failed to detach thread input".to_string());
             }
         }
-        BOOL(1)
+        Ok(())
     }
 
-    unsafe {
-        EnumWindows(Some(enum_windows_proc), LPARAM(&mut windows as *mut _ as isize));
-    }
+    pub fn enumerate_dofus_windows() -> Vec<DofusWindow> {
+        let mut windows = Vec::new();
 
-    windows
+        unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+            if !IsWindowVisible(hwnd).as_bool() {
+                return BOOL(1);
+            }
+
+            let windows = &mut *(lparam.0 as *mut Vec<DofusWindow>);
+            if let Some(title) = get_window_title(hwnd) {
+                if title.contains("- Beta") {
+                    let parts: Vec<&str> = title.split(" - ").collect();
+                    if parts.len() >= 2 {
+                        windows.push(DofusWindow {
+                            title: title.clone(),
+                            hwnd: hwnd.0 as usize,
+                            name: parts[0].to_string(),
+                            class: parts[1].to_string(),
+                        });
+                    }
+                }
+            }
+            BOOL(1)
+        }
+
+        unsafe {
+            EnumWindows(
+                Some(enum_windows_proc),
+                LPARAM(&mut windows as *mut _ as isize),
+            )
+            .ok();
+        }
+
+        windows
+    }
 }
 
+use windows_api::*;
+
+#[command]
+fn get_dofus_windows() -> Vec<DofusWindow> {
+    enumerate_dofus_windows()
+}
 
 #[command]
 fn click_all_windows() -> Result<(), String> {
     let mut cursor_pos = POINT::default();
     unsafe {
         if GetCursorPos(&mut cursor_pos).is_err() {
-            return Err("Failed to get cursor position".into());
+            return Err("Échec de la récupération de la position du curseur".into());
         }
     }
 
@@ -112,84 +188,31 @@ fn click_all_windows() -> Result<(), String> {
         let hwnd_raw = win.hwnd as isize;
 
         thread::spawn(move || {
-            let hwnd = HWND(hwnd_raw as *mut _);
-            let mut client_pos = cursor_pos;
+            let hwnd = HWND(hwnd_raw as *mut c_void);
+            let client_pos = cursor_pos;
 
-            unsafe {
-               
-
-                PostMessageA(
-                    hwnd,
-                    WM_LBUTTONDOWN,
-                    WPARAM(0x0001),
-                    MAKELPARAM(client_pos.x, client_pos.y),
-                );
-                thread::sleep(Duration::from_millis(50)); // Attendez un peu pour que le message soit traité
-
-                PostMessageA(
-                    hwnd,
-                    WM_LBUTTONUP,
-                    WPARAM(0x0000),
-                    MAKELPARAM(client_pos.x, client_pos.y),
-                );
-            
+            if let Err(e) = send_click(hwnd, client_pos) {
+                eprintln!("Erreur lors de l'envoi du clic: {}", e);
             }
 
             thread::sleep(Duration::from_millis(100));
         });
-    } 
+    }
 
     Ok(())
 }
 
-fn MAKELPARAM(x: i32, y: i32) -> LPARAM {
-    LPARAM(((y & 0xFFFF) << 16 | (x & 0xFFFF)) as isize)
-}
-
-fn get_window_title(hwnd: HWND) -> Option<String> {
-    unsafe {
-        let mut buffer = [0u8; 512];
-        let len = GetWindowTextA(hwnd, &mut buffer);
-        if len == 0 {
-            return None;
-        }
-        String::from_utf8(buffer[..len as usize].to_vec()).ok()
-    }
-}
-
 #[command]
 fn get_active_dofus_window() -> Option<DofusWindow> {
-    unsafe {
-        let active_hwnd = GetForegroundWindow();
-        let windows = get_dofus_windows();
-        windows.into_iter().find(|w| w.hwnd == active_hwnd.0 as usize)
-    }
+    let active_hwnd = unsafe { GetForegroundWindow() };
+    let windows = get_dofus_windows();
+    windows.into_iter().find(|w| w.hwnd == active_hwnd.0 as usize)
 }
 
 #[command]
 fn focus_window_command(hwnd: usize, window: Window) -> Result<(), String> {
-    focus_window(hwnd, &window).map_err(|e| e.to_string())
-}
-
-fn focus_window(hwnd: usize, window: &Window) -> Result<(), String> {
-    let hwnd = HWND(hwnd as *mut c_void);
-    unsafe {
-        let current_thread_id = GetCurrentThreadId();
-        let target_thread_id = GetWindowThreadProcessId(hwnd, None);
-
-        if !AttachThreadInput(current_thread_id, target_thread_id, true).as_bool() {
-            return Err("Failed to attach thread input".into());
-        }
-
-        ShowWindow(hwnd, SW_RESTORE);
-        SetForegroundWindow(hwnd);
-
-        if !AttachThreadInput(current_thread_id, target_thread_id, false).as_bool() {
-            return Err("Failed to detach thread input".into());
-        }
-    }
-    emit_active_dofus_changed(window)?;
-
+    focus_window(HWND(hwnd as *mut c_void)).map_err(|e| e.to_string())?;
+    emit_active_dofus_changed(&window)?;
     Ok(())
 }
 
@@ -208,9 +231,9 @@ fn is_focused_on_app_or_dofus(window: WebviewWindow) -> Result<bool, String> {
             .hwnd()
             .map_err(|e| e.to_string())?;
         let dofus_hwnd = get_active_dofus_window()
-        .map(|w| HWND(w.hwnd as *mut c_void));
-    Ok(active_hwnd == app_hwnd || Some(active_hwnd) == dofus_hwnd)
-}
+            .map(|w| HWND(w.hwnd as *mut c_void));
+        Ok(active_hwnd == app_hwnd || Some(active_hwnd) == dofus_hwnd)
+    }
 }
 
 #[command]
@@ -226,11 +249,14 @@ async fn next_window(
     state: State<'_, Arc<Mutex<WindowManager>>>,
     window: Window,
 ) -> Result<(), String> {
-    println!("Command 'next_window' invoked");
-    let mut manager = state.lock().map_err(|_| "Failed to lock WindowManager".to_string())?;
+    println!("Commande 'next_window' invoquée");
+    let mut manager = state
+        .lock()
+        .map_err(|_| "Échec du verrouillage de WindowManager".to_string())?;
     if let Some(next_win) = manager.next_window() {
-        println!("Focusing window: {}", next_win.title);
-        focus_window(next_win.hwnd, &window)?;
+        println!("Focalisation sur la fenêtre: {}", next_win.title);
+        focus_window(HWND(next_win.hwnd as *mut c_void)).map_err(|e| e.to_string())?;
+        emit_active_dofus_changed(&window)?;
     }
     Ok(())
 }
@@ -240,11 +266,14 @@ async fn prev_window(
     state: State<'_, Arc<Mutex<WindowManager>>>,
     window: Window,
 ) -> Result<(), String> {
-    println!("Command 'prev_window' invoked");
-    let mut manager = state.lock().map_err(|_| "Failed to lock WindowManager".to_string())?;
+    println!("Commande 'prev_window' invoquée");
+    let mut manager = state
+        .lock()
+        .map_err(|_| "Échec du verrouillage de WindowManager".to_string())?;
     if let Some(prev_win) = manager.previous_window() {
-        println!("Focusing window: {}", prev_win.title);
-        focus_window(prev_win.hwnd, &window)?;
+        println!("Focalisation sur la fenêtre: {}", prev_win.title);
+        focus_window(HWND(prev_win.hwnd as *mut c_void)).map_err(|e| e.to_string())?;
+        emit_active_dofus_changed(&window)?;
     }
     Ok(())
 }
@@ -252,9 +281,13 @@ async fn prev_window(
 fn emit_active_dofus_changed(window: &Window) -> Result<(), String> {
     if let Some(active_dofus) = get_active_dofus_window() {
         let payload = serde_json::to_value(&active_dofus).map_err(|e| e.to_string())?;
-        window.emit("active_dofus_changed", payload).map_err(|e| e.to_string())
+        window
+            .emit("active_dofus_changed", payload)
+            .map_err(|e| e.to_string())
     } else {
-        window.emit("active_dofus_changed", serde_json::json!(null)).map_err(|e| e.to_string())
+        window
+            .emit("active_dofus_changed", serde_json::json!(null))
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -276,10 +309,14 @@ async fn main() {
             click_all_windows,
         ])
         .setup(move |app| {
-            let window = app.get_webview_window("main").ok_or("Failed to get main window")?;
-            let mut wm = window_manager.lock().map_err(|_| "Failed to lock WindowManager")?;
+            let window = app
+                .get_webview_window("main")
+                .ok_or("Échec de récupération de la fenêtre principale")?;
+            let mut wm = window_manager
+                .lock()
+                .map_err(|_| "Échec du verrouillage de WindowManager")?;
             wm.refresh_windows();
-            let _ = window.set_always_on_top(true);
+            window.set_always_on_top(true)?;
 
             let window_clone = window.clone();
             tokio::spawn(async move {
@@ -293,13 +330,19 @@ async fn main() {
                         Ok(is_focused) => {
                             if is_focused != last_focus {
                                 last_focus = is_focused;
-                                if let Err(e) = window_clone.emit("is_focused_on_app_or_dofus", is_focused) {
-                                    eprintln!("Failed to emit is_focused_on_app_or_dofus: {}", e);
+                                if let Err(e) = window_clone.emit(
+                                    "is_focused_on_app_or_dofus",
+                                    is_focused,
+                                ) {
+                                    eprintln!(
+                                        "Échec de l'émission de is_focused_on_app_or_dofus: {}",
+                                        e
+                                    );
                                 }
                             }
                         }
                         Err(e) => {
-                            eprintln!("Error checking focus: {}", e);
+                            eprintln!("Erreur lors de la vérification du focus: {}", e);
                         }
                     }
                 }
@@ -308,5 +351,5 @@ async fn main() {
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("Failed to run Tauri application");
+        .expect("Échec du lancement de l'application Tauri");
 }
