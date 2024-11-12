@@ -203,6 +203,35 @@ fn click_all_windows() -> Result<(), String> {
 }
 
 #[command]
+fn click_all_windows_with_delay(delay_ms: Option<u64>) -> Result<(), String> {
+    let delay = delay_ms.unwrap_or(100); // 100 ms par défaut
+
+    let mut cursor_pos = POINT::default();
+    unsafe {
+        if GetCursorPos(&mut cursor_pos).is_err() {
+            return Err("Échec de la récupération de la position du curseur".into());
+        }
+    }
+
+    let dofus_windows = get_dofus_windows();
+
+    for win in dofus_windows {
+        let hwnd = HWND(win.hwnd as *mut c_void);
+        let client_pos = cursor_pos;
+
+        if let Err(e) = send_click(hwnd, client_pos) {
+            eprintln!("Erreur lors de l'envoi du clic: {}", e);
+        }
+
+        thread::sleep(Duration::from_millis(delay));
+    }
+
+    Ok(())
+}
+
+
+
+#[command]
 fn get_active_dofus_window() -> Option<DofusWindow> {
     let active_hwnd = unsafe { GetForegroundWindow() };
     let windows = get_dofus_windows();
@@ -307,6 +336,7 @@ async fn main() {
             next_window,
             prev_window,
             click_all_windows,
+            click_all_windows_with_delay,
         ])
         .setup(move |app| {
             let window = app

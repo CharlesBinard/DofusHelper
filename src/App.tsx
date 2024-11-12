@@ -118,6 +118,9 @@ const App: React.FC = () => {
         if (action === 'click_all') {
           await invoke('click_all_windows');
           console.log('Click all windows triggered');
+        } else if (action === 'click_all_with_delay') {
+          await invoke('click_all_windows_with_delay' , {delay_ms: 100});
+          console.log('Click all windows with delay triggered');
         } else {
           await invoke(`${action}_window`);
           console.log(`${action === 'next' ? 'Next' : 'Previous'} window triggered`);
@@ -139,7 +142,7 @@ const App: React.FC = () => {
   useEffect(() => {
     const setupShortcuts = async () => {
       await unregisterAll();
-      const actions: Array<ShortcutAction> = ['next', 'prev', "click_all"];
+      const actions: Array<ShortcutAction> = ['next', 'prev', "click_all", "click_all_with_delay"];
 
       for (const action of actions) {
         const shortcut = shortcuts[action] || DEFAULT_SHORTCUTS[action];
@@ -226,7 +229,7 @@ const App: React.FC = () => {
             </SettingsGroup>
 
             <ShortcutGroup>
-              {(['next', 'prev', 'click_all'] as const).map((action) => (
+              {(['next', 'prev', 'click_all', 'click_all_with_delay'] as const).map((action) => (
                   <ShortcutInputBlock key={action} >
                    <p> {action.charAt(0).toUpperCase() + action.slice(1)}:</p>
                     <ShortcutInput
