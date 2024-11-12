@@ -9,13 +9,11 @@ use std::sync::{Arc, Mutex};
 use tauri::{command, generate_handler, Emitter, Manager, State, WebviewWindow, Window};
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM, POINT, WPARAM};
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
-use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetForegroundWindow, GetWindowTextA, IsWindowVisible, SetForegroundWindow, GetWindowThreadProcessId,
-    ShowWindow, SW_RESTORE, SendMessageA, GetCursorPos, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    EnumWindows, GetCursorPos, GetForegroundWindow, GetWindowTextA, GetWindowThreadProcessId, IsWindowVisible, PostMessageA, SetForegroundWindow, ShowWindow, SW_RESTORE, WM_LBUTTONDOWN, WM_LBUTTONUP
 };
 use tokio::time::{self, Duration};
-use rand::Rng; 
+use std::thread;
 
 #[derive(Serialize, Clone)]
 struct DofusWindow {
@@ -97,6 +95,7 @@ fn get_dofus_windows() -> Vec<DofusWindow> {
     windows
 }
 
+
 #[command]
 fn click_all_windows() -> Result<(), String> {
     let mut cursor_pos = POINT::default();
@@ -109,28 +108,36 @@ fn click_all_windows() -> Result<(), String> {
     let dofus_windows = get_dofus_windows();
 
     for win in dofus_windows {
-        let hwnd = HWND(win.hwnd as *mut c_void);
-        let mut client_pos = cursor_pos;
-        unsafe {
-            if !ScreenToClient(hwnd, &mut client_pos).as_bool() {
-                eprintln!("Failed to convert screen coordinates for hwnd: {}", win.hwnd);
-                continue;
+        let cursor_pos = cursor_pos;
+        let hwnd_raw = win.hwnd as isize;
+
+        thread::spawn(move || {
+            let hwnd = HWND(hwnd_raw as *mut _);
+            let mut client_pos = cursor_pos;
+
+            unsafe {
+               
+
+                PostMessageA(
+                    hwnd,
+                    WM_LBUTTONDOWN,
+                    WPARAM(0x0001),
+                    MAKELPARAM(client_pos.x, client_pos.y),
+                );
+                thread::sleep(Duration::from_millis(50)); // Attendez un peu pour que le message soit traité
+
+                PostMessageA(
+                    hwnd,
+                    WM_LBUTTONUP,
+                    WPARAM(0x0000),
+                    MAKELPARAM(client_pos.x, client_pos.y),
+                );
+            
             }
 
-            SendMessageA(
-                hwnd,
-                WM_LBUTTONDOWN,
-                WPARAM(0x0001),
-                MAKELPARAM(client_pos.x, client_pos.y),
-            );
-            SendMessageA(
-                hwnd,
-                WM_LBUTTONUP,
-                WPARAM(0x0000),
-                MAKELPARAM(client_pos.x, client_pos.y),
-            );
-        }
-    }
+            thread::sleep(Duration::from_millis(100));
+        });
+    } 
 
     Ok(())
 }
@@ -138,7 +145,6 @@ fn click_all_windows() -> Result<(), String> {
 fn MAKELPARAM(x: i32, y: i32) -> LPARAM {
     LPARAM(((y & 0xFFFF) << 16 | (x & 0xFFFF)) as isize)
 }
-
 
 fn get_window_title(hwnd: HWND) -> Option<String> {
     unsafe {
