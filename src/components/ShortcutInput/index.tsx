@@ -1,6 +1,7 @@
 // src/components/ShortcutInput.tsx
 
 import React, { useState, useEffect } from 'react';
+import { VALID_KEYS } from './constants';
 
 type ShortcutInputProps = {
   onShortcutChange: (shortcut: string) => void;
@@ -25,20 +26,21 @@ const ShortcutInput: React.FC<ShortcutInputProps> = ({
       e.preventDefault();
       e.stopPropagation();
 
-      let keys = [];
-      if (e.ctrlKey) keys.push('Ctrl');
-      if (e.shiftKey) keys.push('Shift');
-      if (e.altKey) keys.push('Alt');
-      if (e.metaKey) keys.push('Meta');
 
-      const key = e.key.toUpperCase();
-      if (!['CONTROL', 'SHIFT', 'ALT', 'META'].includes(key) && key !== 'COMMAND') {
-        keys.push(key);
+      const modKeys = [];
+      if (e.ctrlKey) modKeys.push('Control');
+      if (e.shiftKey) modKeys.push('Shift');
+      if (e.altKey) modKeys.push('Alt');
+      if (e.metaKey) modKeys.push('Meta');
+
+      if (!VALID_KEYS.includes(e.code)) {
+        console.warn("Invalid key:", e.code);
+        return; // Ignore invalid keys
       }
 
-      const shortcutStr = keys.join('+');
-      setShortcut(shortcutStr);
-      onShortcutChange(shortcutStr);
+      const formattedShortcut = [...modKeys, e.code].join("+");
+      setShortcut(formattedShortcut);
+      onShortcutChange(formattedShortcut);
       setListening(false);
       window.removeEventListener('keydown', handleKeyDown);
     };
@@ -67,7 +69,7 @@ const ShortcutInput: React.FC<ShortcutInputProps> = ({
         readOnly
         placeholder="Press shortcut..."
         onClick={handleClick}
-        style={{ cursor: 'pointer', width: '50px', borderRadius: '5px' }}
+        style={{ cursor: 'pointer', borderRadius: '5px' }}
       />
       {listening && <span> Listening...</span>}
     </div>
